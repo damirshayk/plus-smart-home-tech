@@ -32,6 +32,7 @@ public class SensorEventService {
         return sender.send(
                 sensorsTopic,
                 avroEvent.getHubId(),
+                avroEvent.getTimestamp().toEpochMilli(),
                 avroEvent
         );
     }

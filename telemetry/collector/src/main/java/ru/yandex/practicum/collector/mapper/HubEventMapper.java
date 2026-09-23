@@ -64,13 +64,23 @@ public class HubEventMapper {
     private ScenarioConditionAvro toConditionAvro(
             ScenarioCondition condition) {
 
+        Integer originalValue = condition.getValue();
+        Object avroValue = originalValue;
+
+        if (originalValue != null) {
+            avroValue = switch (condition.getType()) {
+                case MOTION, SWITCH -> originalValue != 0;
+                default -> originalValue;
+            };
+        }
+
         return new ScenarioConditionAvro(
                 condition.getSensorId(),
                 ConditionTypeAvro.valueOf(condition.getType().name()),
                 ConditionOperationAvro.valueOf(
                         condition.getOperation().name()
                 ),
-                condition.getValue()
+                avroValue
         );
     }
 

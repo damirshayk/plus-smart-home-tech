@@ -32,6 +32,7 @@ public class HubEventService {
         return sender.send(
                 hubsTopic,
                 avroEvent.getHubId(),
+                avroEvent.getTimestamp().toEpochMilli(),
                 avroEvent
         );
     }
