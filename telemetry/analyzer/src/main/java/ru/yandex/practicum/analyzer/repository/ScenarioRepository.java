@@ -14,6 +14,7 @@ public interface ScenarioRepository extends JpaRepository<Scenario, Long> {
 
     Optional<Scenario> findByHubIdAndName(String hubId, String name);
 
+    // Чтобы не было N+1 запроса, но при этом не было дублирования сценариев в списке
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     default List<Scenario> findByHubId(String hubId) {
         List<Scenario> scenarios = findWithConditionsByHubId(hubId);
