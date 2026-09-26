@@ -13,6 +13,18 @@ spring:
     init:
       mode: always
 
+analyzer:
+  kafka:
+    hubs:
+      bootstrap-servers: localhost:9092
+      group-id: analyzer-hubs
+      topic: telemetry.hubs.v1
+      auto-offset-reset: earliest
+      max-poll-records: 100
+      poll-timeout: 1s
+      close-timeout: 10s
+      shutdown-timeout: 30s
+
 grpc:
   client:
     hub-router:
