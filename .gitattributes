@@ -1,3 +1,2 @@
 *.jar filter=lfs diff=lfs merge=lfs -text
-hub-router/run-tests.bat text eol=crlf
-hub-router/scripts/windows/3-aggregator-tests.bat text eol=crlf
+*.bat text eol=crlf
