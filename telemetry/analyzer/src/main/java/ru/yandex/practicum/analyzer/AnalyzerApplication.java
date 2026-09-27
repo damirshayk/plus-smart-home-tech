@@ -6,6 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.context.ConfigurableApplicationContext;
 import ru.yandex.practicum.analyzer.service.HubEventProcessor;
+import ru.yandex.practicum.analyzer.service.SnapshotProcessor;
 
 @Slf4j
 @SpringBootApplication
@@ -15,11 +16,17 @@ public class AnalyzerApplication {
     public static void main(String[] args) {
         ConfigurableApplicationContext context = SpringApplication.run(AnalyzerApplication.class, args);
         HubEventProcessor hubEventProcessor = context.getBean(HubEventProcessor.class);
+        SnapshotProcessor snapshotProcessor = context.getBean(SnapshotProcessor.class);
         Thread hubEventsThread = new Thread(hubEventProcessor, "HubEventHandlerThread");
         hubEventsThread.setUncaughtExceptionHandler((thread, error) -> {
             log.error("Обработка событий хабов остановлена из-за ошибки", error);
             context.close();
         });
         hubEventsThread.start();
+        try {
+            snapshotProcessor.start();
+        } finally {
+            context.close();
+        }
     }
 }

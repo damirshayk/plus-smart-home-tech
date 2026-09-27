@@ -24,6 +24,17 @@ analyzer:
       poll-timeout: 1s
       close-timeout: 10s
       shutdown-timeout: 30s
+    snapshots:
+      bootstrap-servers: localhost:9092
+      group-id: analyzer-snapshots
+      topic: telemetry.snapshots.v1
+      auto-offset-reset: earliest
+      max-poll-records: 10
+      poll-timeout: 1s
+      close-timeout: 10s
+      shutdown-timeout: 30s
+  hub-router:
+    request-timeout: 5s
 
 grpc:
   client:
