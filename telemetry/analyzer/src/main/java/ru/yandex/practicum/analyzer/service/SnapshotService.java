@@ -2,6 +2,7 @@ package ru.yandex.practicum.analyzer.service;
 
 import com.google.protobuf.Timestamp;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import ru.yandex.practicum.analyzer.model.Action;
 import ru.yandex.practicum.analyzer.model.Scenario;
@@ -12,8 +13,10 @@ import ru.yandex.practicum.grpc.telemetry.event.DeviceActionProto;
 import ru.yandex.practicum.grpc.telemetry.event.DeviceActionRequest;
 import ru.yandex.practicum.kafka.telemetry.event.SensorsSnapshotAvro;
 
+import java.util.ArrayList;
 import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SnapshotService {
@@ -22,7 +25,7 @@ public class SnapshotService {
     private final ConditionEvaluator conditionEvaluator;
     private final HubRouterClient hubRouterClient;
 
-    public void handle(SensorsSnapshotAvro snapshot) {
+    public List<DeviceActionRequest> prepare(SensorsSnapshotAvro snapshot) {
         if (snapshot == null || snapshot.getHubId() == null || snapshot.getHubId().isBlank()
                 || snapshot.getTimestamp() == null || snapshot.getSensorsState() == null) {
             throw new IllegalArgumentException("Снимок должен содержать hubId, timestamp и состояния датчиков");
@@ -31,20 +34,35 @@ public class SnapshotService {
                 .setSeconds(snapshot.getTimestamp().getEpochSecond())
                 .setNanos(snapshot.getTimestamp().getNano())
                 .build();
-        List<DeviceActionRequest> requests = scenarioRepository.findByHubId(snapshot.getHubId()).stream()
-                .filter(scenario -> scenario.getConditions().stream()
-                        .allMatch(condition -> conditionEvaluator.matches(condition, snapshot.getSensorsState())))
-                .flatMap(scenario -> scenario.getActions().stream()
-                        .map(action -> toRequest(scenario, action, timestamp)))
-                .toList();
-        requests.forEach(hubRouterClient::send);
+        List<DeviceActionRequest> requests = new ArrayList<>();
+        for (Scenario scenario : scenarioRepository.findByHubId(snapshot.getHubId())) {
+            if (!scenario.getConditions().stream()
+                    .allMatch(condition -> conditionEvaluator.matches(condition, snapshot.getSensorsState()))) {
+                continue;
+            }
+            for (ScenarioAction action : scenario.getActions()) {
+                try {
+                    requests.add(toRequest(scenario, action, timestamp));
+                } catch (IllegalArgumentException e) {
+                    log.warn("Пропущено некорректное действие: hubId={}, scenarioId={}: {}",
+                            snapshot.getHubId(), scenario.getId(), e.getMessage());
+                }
+            }
+        }
+        return List.copyOf(requests);
+    }
+
+    public void send(DeviceActionRequest request) {
+        hubRouterClient.send(request);
     }
 
     private DeviceActionRequest toRequest(Scenario scenario, ScenarioAction link, Timestamp timestamp) {
-        Action action = link.getAction();
+        Action action = link == null ? null : link.getAction();
         if (action == null || action.getType() == null || link.getSensor() == null
-                || link.getSensor().getId() == null || scenario.getName() == null) {
-            throw new IllegalStateException("Сценарий содержит неполное действие: " + scenario.getId());
+                || link.getSensor().getId() == null || link.getSensor().getId().isBlank()
+                || scenario.getName() == null || scenario.getName().isBlank()
+                || scenario.getHubId() == null || scenario.getHubId().isBlank()) {
+            throw new IllegalArgumentException("Сценарий содержит неполное действие");
         }
         DeviceActionProto.Builder command = DeviceActionProto.newBuilder()
                 .setSensorId(link.getSensor().getId())

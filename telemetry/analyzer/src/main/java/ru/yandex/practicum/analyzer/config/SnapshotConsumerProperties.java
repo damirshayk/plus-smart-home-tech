@@ -19,4 +19,5 @@ public class SnapshotConsumerProperties {
     private Duration pollTimeout;
     private Duration closeTimeout;
     private Duration shutdownTimeout = Duration.ofSeconds(30);
+    private Duration retryDelay = Duration.ofSeconds(1);
 }
