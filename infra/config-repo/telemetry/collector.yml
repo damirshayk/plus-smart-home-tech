@@ -1,0 +1,10 @@
+grpc:
+  server:
+    port: 59091
+
+collector:
+  kafka:
+    bootstrap-servers: ${kafka.bootstrap-servers}
+    topics:
+      sensors: telemetry.sensors.v1
+      hubs: telemetry.hubs.v1
