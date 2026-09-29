@@ -13,7 +13,8 @@ import org.springframework.http.ResponseEntity;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
-        "spring.cloud.config.server.native.search-locations=file:../config-repo,file:../config-repo/telemetry"
+        "spring.cloud.config.server.native.search-locations="
+                + "file:../config-repo,file:../config-repo/telemetry,file:../config-repo/commerce"
 })
 class ConfigServerTest {
 
@@ -28,7 +29,10 @@ class ConfigServerTest {
     @CsvSource({
             "collector, collector.kafka.topics.sensors, telemetry.sensors.v1",
             "aggregator, aggregator.kafka.topics.snapshots, telemetry.snapshots.v1",
-            "analyzer, analyzer.kafka.hubs.topic, telemetry.hubs.v1"
+            "analyzer, analyzer.kafka.hubs.topic, telemetry.hubs.v1",
+            "product-service, spring.datasource.url, jdbc:postgresql://localhost:5432/product_db",
+            "inventory-service, spring.datasource.url, jdbc:postgresql://localhost:5432/inventory_db",
+            "order-service, spring.datasource.url, jdbc:postgresql://localhost:5432/order_db"
     })
     void shouldServeCommonAndServiceConfiguration(String application, String key, String value) {
         ResponseEntity<Environment> response = http.getForEntity(
@@ -47,6 +51,24 @@ class ConfigServerTest {
                         .isEqualTo("http://localhost:8761/eureka/"));
         assertThat(configuration.getPropertySources()).anySatisfy(source ->
                 assertThat(source.getSource().get(key)).isEqualTo(value));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"product-service", "inventory-service", "order-service"})
+    void shouldServeCommercePersistenceSettings(String application) {
+        ResponseEntity<Environment> response = http.getForEntity(
+                "/{application}/default", Environment.class, application);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Environment configuration = response.getBody();
+        assertThat(configuration).isNotNull();
+        assertThat(configuration.getPropertySources()).anySatisfy(source -> {
+            assertThat(source.getName()).contains("/commerce/" + application + ".yml");
+            assertThat(source.getSource().get("server.port")).isEqualTo(0);
+            assertThat(source.getSource().get("spring.jpa.hibernate.ddl-auto")).isEqualTo("validate");
+            assertThat(source.getSource().get("spring.jpa.open-in-view")).isEqualTo(false);
+            assertThat(source.getSource().get("spring.sql.init.mode")).isEqualTo("always");
+        });
     }
 
     @Test

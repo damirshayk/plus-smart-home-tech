@@ -1,0 +1,15 @@
+server:
+  port: 0
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/order_db
+    username: dbuser
+    password: ${DB_PASSWORD:12345}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  sql:
+    init:
+      mode: always
