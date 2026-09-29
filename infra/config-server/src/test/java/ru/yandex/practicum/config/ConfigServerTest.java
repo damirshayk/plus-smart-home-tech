@@ -1,5 +1,6 @@
 package ru.yandex.practicum.config;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,6 +43,21 @@ class ConfigServerTest {
         assertThat(configuration.getPropertySources()).anySatisfy(source ->
                 assertThat(source.getSource().get("kafka.bootstrap-servers")).isEqualTo("localhost:9092"));
         assertThat(configuration.getPropertySources()).anySatisfy(source ->
+                assertThat(source.getSource().get("eureka.client.serviceUrl.defaultZone"))
+                        .isEqualTo("http://localhost:8761/eureka/"));
+        assertThat(configuration.getPropertySources()).anySatisfy(source ->
                 assertThat(source.getSource().get(key)).isEqualTo(value));
+    }
+
+    @Test
+    void shouldServeHubRouterDiscoveryAddress() {
+        ResponseEntity<Environment> response = http.getForEntity("/analyzer/default", Environment.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Environment configuration = response.getBody();
+        assertThat(configuration).isNotNull();
+        assertThat(configuration.getPropertySources()).anySatisfy(source ->
+                assertThat(source.getSource().get("grpc.client.hub-router.address"))
+                        .isEqualTo("discovery:///hub-router"));
     }
 }
