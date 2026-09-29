@@ -2,16 +2,19 @@ package ru.yandex.practicum.product;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import org.hibernate.SessionFactory;
 import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -20,6 +23,7 @@ import ru.yandex.practicum.product.dto.CreateCategoryRequest;
 import ru.yandex.practicum.product.dto.CreateProductRequest;
 import ru.yandex.practicum.product.dto.ProductDto;
 import ru.yandex.practicum.product.dto.UpdateProductRequest;
+import ru.yandex.practicum.product.entity.Product;
 import ru.yandex.practicum.product.repository.CategoryRepository;
 import ru.yandex.practicum.product.repository.ProductRepository;
 
@@ -27,6 +31,7 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -46,6 +51,7 @@ class ProductServiceContractTest {
     private final ObjectMapper json;
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
+    private final EntityManagerFactory entityManagerFactory;
     private final Statistics statistics;
 
     @Autowired
@@ -55,6 +61,7 @@ class ProductServiceContractTest {
         this.json = json;
         this.productRepository = productRepository;
         this.categoryRepository = categoryRepository;
+        this.entityManagerFactory = entityManagerFactory;
         this.statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
     }
 
@@ -133,6 +140,37 @@ class ProductServiceContractTest {
                 .extracting(ProductDto::id).containsExactly(untouched.id());
         assertThat(products("/api/products/category/" + second.id()))
                 .extracting(ProductDto::id).containsExactly(changing.id());
+    }
+
+    @Test
+    void shouldPreserveChangesToDifferentFieldsFromOverlappingTransactions() throws Exception {
+        ProductDto original = createProduct("Лампа", null);
+        EntityManager first = entityManagerFactory.createEntityManager();
+        EntityManager second = entityManagerFactory.createEntityManager();
+        try {
+            first.getTransaction().begin();
+            second.getTransaction().begin();
+            Product firstProduct = first.find(Product.class, original.id());
+            Product secondProduct = second.find(Product.class, original.id());
+
+            firstProduct.setActive(false);
+            first.getTransaction().commit();
+            secondProduct.setPrice(new BigDecimal("20"));
+            second.getTransaction().commit();
+        } finally {
+            if (first.getTransaction().isActive()) {
+                first.getTransaction().rollback();
+            }
+            if (second.getTransaction().isActive()) {
+                second.getTransaction().rollback();
+            }
+            first.close();
+            second.close();
+        }
+
+        ProductDto stored = product(original.id());
+        assertThat(stored.active()).isFalse();
+        assertThat(stored.price()).isEqualByComparingTo("20");
     }
 
     @Test
@@ -221,7 +259,7 @@ class ProductServiceContractTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"{}", "{\"name\":\" \"}", "{\"name\":\"Лампа\",\"price\":0}",
+    @ValueSource(strings = {"{}", "{\"name\":\"Лампа\",\"price\":0}",
             "{\"name\":\"Лампа\",\"price\":-1}", "{\"name\":\"Лампа\",\"price\":0.001}",
             "{\"name\":\"Лампа\",\"price\":\"ошибка\"}", "{", "null"})
     void shouldRejectInvalidProductPayload(String body) throws Exception {
@@ -229,6 +267,45 @@ class ProductServiceContractTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("status").value(400))
                 .andExpect(jsonPath("message").isNotEmpty());
+        assertThat(productRepository.count()).isZero();
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = "   ")
+    void shouldRejectBlankProductNameWithValidPrice(String name) throws Exception {
+        CreateProductRequest request = new CreateProductRequest(name, null, BigDecimal.ONE, null, null);
+
+        mvc.perform(post("/api/products").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(request)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("status").value(400))
+                .andExpect(jsonPath("validationErrors.name").exists());
+        assertThat(productRepository.count()).isZero();
+    }
+
+    @Test
+    void shouldReturnMethodNotAllowedWithSupportedMethods() throws Exception {
+        MvcResult result = mvc.perform(delete("/api/products"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("status").value(405))
+                .andExpect(jsonPath("message").isNotEmpty())
+                .andReturn();
+
+        assertThat(result.getResponse().getHeader(HttpHeaders.ALLOW)).contains("GET", "POST");
+        assertThat(productRepository.count()).isZero();
+    }
+
+    @Test
+    void shouldReturnUnsupportedMediaTypeWithAcceptedTypes() throws Exception {
+        MvcResult result = mvc.perform(post("/api/products").contentType(MediaType.TEXT_PLAIN)
+                        .content("{\"name\":\"Лампа\",\"price\":1}"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("status").value(415))
+                .andExpect(jsonPath("message").isNotEmpty())
+                .andReturn();
+
+        assertThat(result.getResponse().getHeader(HttpHeaders.ACCEPT)).contains(MediaType.APPLICATION_JSON_VALUE);
         assertThat(productRepository.count()).isZero();
     }
 

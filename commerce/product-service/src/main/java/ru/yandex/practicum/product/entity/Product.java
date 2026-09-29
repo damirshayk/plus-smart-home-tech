@@ -13,11 +13,13 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.hibernate.annotations.Check;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.math.BigDecimal;
 
 @Entity
 @Table(name = "products")
+@DynamicUpdate
 @Check(constraints = "price >= 0.01")
 @Getter
 @Setter

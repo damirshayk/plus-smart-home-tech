@@ -8,11 +8,14 @@ import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
@@ -29,8 +32,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -166,8 +171,41 @@ class OrderServiceContractTest {
     }
 
     @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = " ")
+    void shouldRejectInvalidCustomerNameWithoutPersistingOrder(String customerName) throws Exception {
+        CreateOrderRequest request = new CreateOrderRequest(customerName, "buyer@example.com",
+                List.of(item(1L, "Лампа", 1, "1")));
+
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(request)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("status").value(400))
+                .andExpect(jsonPath("validationErrors.customerName").isNotEmpty())
+                .andExpect(jsonPath("validationErrors.customerEmail").doesNotExist());
+        assertThat(orderRepository.count()).isZero();
+        assertThat(itemCount()).isZero();
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {" ", "not-an-email"})
+    void shouldRejectInvalidCustomerEmailWithoutPersistingOrder(String customerEmail) throws Exception {
+        CreateOrderRequest request = new CreateOrderRequest("Покупатель", customerEmail,
+                List.of(item(1L, "Лампа", 1, "1")));
+
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(request)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("status").value(400))
+                .andExpect(jsonPath("validationErrors.customerEmail").isNotEmpty())
+                .andExpect(jsonPath("validationErrors.customerName").doesNotExist());
+        assertThat(orderRepository.count()).isZero();
+        assertThat(itemCount()).isZero();
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"{}", "{", "null",
-            "{\"customerName\":\" \",\"customerEmail\":\"not-an-email\",\"items\":[]}",
             "{\"customerName\":\"Покупатель\",\"customerEmail\":\"buyer@example.com\","
                     + "\"items\":[{\"productId\":\"ошибка\",\"productName\":\"Лампа\",\"quantity\":1,\"price\":1}]}"})
     void shouldRejectInvalidOrderAndMalformedJson(String body) throws Exception {
@@ -176,6 +214,46 @@ class OrderServiceContractTest {
                 .andExpect(jsonPath("status").value(400))
                 .andExpect(jsonPath("message").isNotEmpty());
         assertThat(orderRepository.count()).isZero();
+    }
+
+    @Test
+    void shouldReturnMethodNotAllowedWithSupportedMethods() throws Exception {
+        CreateOrderRequest request = new CreateOrderRequest("Покупатель", "buyer@example.com",
+                List.of(item(1L, "Лампа", 1, "1")));
+
+        MvcResult result = mvc.perform(delete("/api/orders").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(request)))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("status").value(405))
+                .andExpect(jsonPath("message").isNotEmpty())
+                .andReturn();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.addAll(HttpHeaders.ALLOW, result.getResponse().getHeaders(HttpHeaders.ALLOW));
+        assertThat(headers.getAllow()).contains(HttpMethod.GET, HttpMethod.POST);
+        assertThat(orderRepository.count()).isZero();
+        assertThat(itemCount()).isZero();
+    }
+
+    @Test
+    void shouldReturnUnsupportedMediaTypeWithAcceptedTypes() throws Exception {
+        CreateOrderRequest request = new CreateOrderRequest("Покупатель", "buyer@example.com",
+                List.of(item(1L, "Лампа", 1, "1")));
+
+        MvcResult result = mvc.perform(post("/api/orders").contentType(MediaType.TEXT_PLAIN)
+                        .content(json.writeValueAsString(request)))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("status").value(415))
+                .andExpect(jsonPath("message").isNotEmpty())
+                .andReturn();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.addAll(HttpHeaders.ACCEPT, result.getResponse().getHeaders(HttpHeaders.ACCEPT));
+        assertThat(headers.getAccept()).anyMatch(MediaType.APPLICATION_JSON::isCompatibleWith);
+        assertThat(orderRepository.count()).isZero();
+        assertThat(itemCount()).isZero();
     }
 
     @Test

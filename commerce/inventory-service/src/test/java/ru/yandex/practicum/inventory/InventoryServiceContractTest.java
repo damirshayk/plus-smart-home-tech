@@ -10,6 +10,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.web.servlet.MockMvc;
@@ -22,6 +24,7 @@ import ru.yandex.practicum.inventory.repository.InventoryRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -198,6 +201,34 @@ class InventoryServiceContractTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("status").value(400))
                 .andExpect(jsonPath("message").isNotEmpty());
+    }
+
+    @Test
+    void shouldRejectUnsupportedMethodWithAllowedMethods() throws Exception {
+        MvcResult result = mvc.perform(delete("/api/inventory"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("status").value(405))
+                .andExpect(jsonPath("message").isNotEmpty())
+                .andReturn();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.ALLOW, result.getResponse().getHeader(HttpHeaders.ALLOW));
+        assertThat(headers.getAllow()).contains(HttpMethod.GET, HttpMethod.POST, HttpMethod.PUT);
+        assertThat(inventoryRepository.count()).isZero();
+    }
+
+    @Test
+    void shouldRejectUnsupportedMediaTypeWithAcceptedTypes() throws Exception {
+        MvcResult result = mvc.perform(post("/api/inventory").contentType(MediaType.TEXT_PLAIN)
+                        .content(json.writeValueAsString(new UpdateInventoryRequest(101L, 5))))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("status").value(415))
+                .andExpect(jsonPath("message").isNotEmpty())
+                .andReturn();
+
+        assertThat(MediaType.parseMediaTypes(result.getResponse().getHeader(HttpHeaders.ACCEPT)))
+                .contains(MediaType.APPLICATION_JSON);
+        assertThat(inventoryRepository.count()).isZero();
     }
 
     @Test
