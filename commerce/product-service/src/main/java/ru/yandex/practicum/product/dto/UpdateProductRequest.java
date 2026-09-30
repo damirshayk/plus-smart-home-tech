@@ -1,11 +1,13 @@
 package ru.yandex.practicum.product.dto;
 
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 
 public record UpdateProductRequest(
 
+        @Pattern(regexp = "(?s).*\\S.*", message = "Название товара не должно быть пустым")
         @Size(max = 255, message = "Название не может быть длиннее 255 символов")
         String name,
 
