@@ -13,6 +13,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -24,6 +25,9 @@ import ru.yandex.practicum.order.dto.CreateOrderRequest;
 import ru.yandex.practicum.order.dto.OrderDto;
 import ru.yandex.practicum.order.dto.OrderItemDto;
 import ru.yandex.practicum.order.dto.OrderItemRequest;
+import ru.yandex.practicum.order.entity.Order;
+import ru.yandex.practicum.order.entity.OrderStatus;
+import ru.yandex.practicum.order.mapper.OrderMapper;
 import ru.yandex.practicum.order.repository.OrderRepository;
 import ru.yandex.practicum.order.service.OrderService;
 
@@ -32,6 +36,9 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -46,23 +53,26 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.jpa.properties.hibernate.generate_statistics=true"
 })
 @AutoConfigureMockMvc
+@SpyBean(OrderMapper.class)
 class OrderServiceContractTest {
 
     private final MockMvc mvc;
     private final ObjectMapper json;
     private final OrderRepository orderRepository;
     private final OrderService orderService;
+    private final OrderMapper orderMapper;
     private final JdbcTemplate jdbc;
     private final Statistics statistics;
 
     @Autowired
     OrderServiceContractTest(MockMvc mvc, ObjectMapper json, OrderRepository orderRepository,
-                             OrderService orderService, JdbcTemplate jdbc,
+                             OrderService orderService, OrderMapper orderMapper, JdbcTemplate jdbc,
                              EntityManagerFactory entityManagerFactory) {
         this.mvc = mvc;
         this.json = json;
         this.orderRepository = orderRepository;
         this.orderService = orderService;
+        this.orderMapper = orderMapper;
         this.jdbc = jdbc;
         this.statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
     }
@@ -123,6 +133,17 @@ class OrderServiceContractTest {
         assertThat(stored.items().get(0).price()).isEqualByComparingTo(price);
         assertThat(stored.items().get(0).quantity()).isEqualTo(Integer.MAX_VALUE);
         assertThat(stored.items().get(1).price()).isEqualByComparingTo("0.0123456789");
+    }
+
+    @Test
+    void shouldStoreStatusAsTextAndLoadItAsEnum() throws Exception {
+        OrderDto created = create("buyer@example.com", List.of(item(1L, "Лампа", 1, "1")));
+
+        assertThat(jdbc.queryForObject("SELECT status FROM orders WHERE id = ?", String.class, created.id()))
+                .isEqualTo("CREATED");
+        OrderStatus storedStatus = orderRepository.findById(created.id()).orElseThrow().getStatus();
+        assertThat(storedStatus).isEqualTo(OrderStatus.CREATED);
+        assertThat(byId(created.id()).status()).isEqualTo("CREATED");
     }
 
     @Test
@@ -277,6 +298,34 @@ class OrderServiceContractTest {
         assertThat(orderRepository.count()).isEqualTo(1);
         assertThat(itemCount()).isEqualTo(1);
         assertThat(byId(original.id()).items()).isEqualTo(original.items());
+        assertThat(byEmail("other@example.com")).isEmpty();
+    }
+
+    @Test
+    void shouldRollBackOrderAndItemsWhenResponseMappingFails() throws Exception {
+        OrderDto original = create("buyer@example.com", List.of(item(1L, "Лампа", 1, "1")));
+        CreateOrderRequest request = new CreateOrderRequest("Покупатель", "other@example.com", List.of(
+                item(2L, "Розетка", 1, "2"), item(3L, "Датчик", 2, "3")));
+        IllegalStateException mappingFailure = new IllegalStateException("Ошибка построения ответа заказа");
+        doAnswer(invocation -> {
+            Order saved = invocation.getArgument(0);
+            assertThat(saved.getId()).isNotNull();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM orders WHERE id = ?", Long.class, saved.getId()))
+                    .isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_items WHERE order_id = ?",
+                    Long.class, saved.getId())).isEqualTo(2);
+            throw mappingFailure;
+        }).when(orderMapper).toDto(any(Order.class));
+
+        try {
+            assertThatThrownBy(() -> orderService.create(request)).isSameAs(mappingFailure);
+        } finally {
+            doCallRealMethod().when(orderMapper).toDto(any(Order.class));
+        }
+
+        assertThat(orderRepository.count()).isEqualTo(1);
+        assertThat(itemCount()).isEqualTo(1);
+        assertThat(byId(original.id())).isEqualTo(original);
         assertThat(byEmail("other@example.com")).isEmpty();
     }
 

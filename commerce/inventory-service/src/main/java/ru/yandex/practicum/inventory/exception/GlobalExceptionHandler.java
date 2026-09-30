@@ -2,7 +2,6 @@ package ru.yandex.practicum.inventory.exception;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -37,10 +36,11 @@ public class GlobalExceptionHandler {
         return new ErrorResponse(HttpStatus.CONFLICT.value(), e.getMessage());
     }
 
-    @ExceptionHandler(DataIntegrityViolationException.class)
+    @ExceptionHandler(InventoryAlreadyExistsException.class)
     @ResponseStatus(HttpStatus.CONFLICT)
-    public ErrorResponse handleDataIntegrity() {
-        return new ErrorResponse(HttpStatus.CONFLICT.value(), "Конфликт данных складской записи");
+    public ErrorResponse handleAlreadyExists(InventoryAlreadyExistsException e) {
+        log.warn("Складская запись уже существует: {}", e.getMessage());
+        return new ErrorResponse(HttpStatus.CONFLICT.value(), e.getMessage());
     }
 
     /**

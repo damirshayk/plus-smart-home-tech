@@ -28,7 +28,7 @@ public class OrderMapper {
     }
 
     public OrderDto toDto(Order order) {
-        return new OrderDto(order.getId(), order.getCustomerName(), order.getCustomerEmail(), order.getStatus(),
+        return new OrderDto(order.getId(), order.getCustomerName(), order.getCustomerEmail(), order.getStatus().name(),
                 order.getTotalPrice(), order.getStatusDetails(), order.getCreatedAt(),
                 order.getItems().stream().map(this::toItemDto).toList());
     }

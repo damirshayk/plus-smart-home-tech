@@ -1,6 +1,7 @@
 package ru.yandex.practicum.inventory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -16,20 +17,32 @@ import org.springframework.http.MediaType;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import ru.yandex.practicum.inventory.controller.InventoryController;
 import ru.yandex.practicum.inventory.dto.InventoryDto;
 import ru.yandex.practicum.inventory.dto.ReserveRequest;
 import ru.yandex.practicum.inventory.dto.UpdateInventoryRequest;
 import ru.yandex.practicum.inventory.entity.Inventory;
+import ru.yandex.practicum.inventory.exception.GlobalExceptionHandler;
+import ru.yandex.practicum.inventory.mapper.InventoryMapper;
 import ru.yandex.practicum.inventory.repository.InventoryRepository;
+import ru.yandex.practicum.inventory.service.InventoryService;
+
+import java.sql.SQLException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.AdditionalAnswers.delegatesTo;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup;
 
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:inventory_contract_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
@@ -75,16 +88,84 @@ class InventoryServiceContractTest {
 
     @Test
     void shouldRejectDuplicateWithoutChangingExistingRecord() throws Exception {
-        InventoryDto original = createInventory(101L, 5);
+        createInventory(101L, 5);
+        reserve(101L, 2);
+        InventoryDto original = inventory(101L);
 
         mvc.perform(post("/api/inventory").contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(new UpdateInventoryRequest(101L, 9))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("status").value(409))
-                .andExpect(jsonPath("message").isNotEmpty());
+                .andExpect(jsonPath("message").value("Складская запись для товара с id 101 уже существует"));
 
         assertThat(inventory(101L)).isEqualTo(original);
         assertThat(inventoryRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldRejectDuplicateCreatedAfterExistenceCheck() throws Exception {
+        InventoryRepository racingRepository = mock(InventoryRepository.class, delegatesTo(inventoryRepository));
+        doAnswer(invocation -> {
+            Inventory concurrent = new Inventory();
+            concurrent.setProductId(101L);
+            concurrent.setQuantity(5);
+            concurrent.setReservedQuantity(2);
+            inventoryRepository.saveAndFlush(concurrent);
+            return inventoryRepository.saveAndFlush(invocation.getArgument(0));
+        }).when(racingRepository).saveAndFlush(any(Inventory.class));
+
+        mvcForRepository(racingRepository)
+                .perform(post("/api/inventory").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new UpdateInventoryRequest(101L, 9))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("status").value(409))
+                .andExpect(jsonPath("message").value("Складская запись для товара с id 101 уже существует"));
+
+        InventoryDto stored = inventory(101L);
+        assertThat(stored.quantity()).isEqualTo(5);
+        assertThat(stored.reservedQuantity()).isEqualTo(2);
+        assertThat(stored.availableQuantity()).isEqualTo(3);
+        assertThat(inventoryRepository.count()).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"23505, uk_inventory_product_id, 409",
+            "23505, unrelated_unique_constraint, 500",
+            "23505, PUBLIC.UK_INVENTORY_PRODUCT_ID_INDEX_2_OTHER, 500",
+            "23505, , 500",
+            "23514, uk_inventory_product_id, 500",
+            "23502, , 500"})
+    void shouldRecognizeOnlyProductIdUniqueViolation(String sqlState, String constraintName, int expectedStatus)
+            throws Exception {
+        InventoryRepository failingRepository = mock(InventoryRepository.class);
+        SQLException databaseError = new SQLException("Внутренние сведения БД", sqlState);
+        ConstraintViolationException violation = new ConstraintViolationException(
+                "Внутренние сведения SQL", databaseError, constraintName);
+        doThrow(new DataIntegrityViolationException("Ошибка записи", violation))
+                .when(failingRepository).saveAndFlush(any(Inventory.class));
+        String expectedMessage = expectedStatus == 409
+                ? "Складская запись для товара с id 101 уже существует" : "Внутренняя ошибка сервера";
+
+        mvcForRepository(failingRepository)
+                .perform(post("/api/inventory").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new UpdateInventoryRequest(101L, 5))))
+                .andExpect(status().is(expectedStatus))
+                .andExpect(jsonPath("status").value(expectedStatus))
+                .andExpect(jsonPath("message").value(expectedMessage));
+    }
+
+    @Test
+    void shouldNotExposeUnexpectedDataIntegrityError() throws Exception {
+        InventoryRepository failingRepository = mock(InventoryRepository.class);
+        doThrow(new DataIntegrityViolationException("Внутренние сведения SQL"))
+                .when(failingRepository).saveAndFlush(any(Inventory.class));
+
+        mvcForRepository(failingRepository)
+                .perform(post("/api/inventory").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new UpdateInventoryRequest(101L, 5))))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("status").value(500))
+                .andExpect(jsonPath("message").value("Внутренняя ошибка сервера"));
     }
 
     @Test
@@ -261,6 +342,12 @@ class InventoryServiceContractTest {
         assertThatThrownBy(() -> inventoryRepository.saveAndFlush(invalid))
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThat(inventoryRepository.count()).isZero();
+    }
+
+    private MockMvc mvcForRepository(InventoryRepository repository) {
+        InventoryService service = new InventoryService(repository, new InventoryMapper());
+        return standaloneSetup(new InventoryController(service))
+                .setControllerAdvice(new GlobalExceptionHandler()).build();
     }
 
     private InventoryDto createInventory(long productId, int quantity) throws Exception {

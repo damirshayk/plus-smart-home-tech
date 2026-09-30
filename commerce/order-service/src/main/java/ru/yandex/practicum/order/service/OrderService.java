@@ -2,9 +2,11 @@ package ru.yandex.practicum.order.service;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import ru.yandex.practicum.order.dto.CreateOrderRequest;
 import ru.yandex.practicum.order.dto.OrderDto;
 import ru.yandex.practicum.order.entity.Order;
+import ru.yandex.practicum.order.entity.OrderStatus;
 import ru.yandex.practicum.order.exception.NotFoundException;
 import ru.yandex.practicum.order.mapper.OrderMapper;
 import ru.yandex.practicum.order.repository.OrderRepository;
@@ -21,9 +23,10 @@ public class OrderService {
     private final OrderRepository orderRepository;
     private final OrderMapper orderMapper;
 
+    @Transactional
     public OrderDto create(CreateOrderRequest request) {
         Order order = orderMapper.toEntity(request);
-        order.setStatus("CREATED");
+        order.setStatus(OrderStatus.CREATED);
         order.setCreatedAt(LocalDateTime.now().truncatedTo(ChronoUnit.MICROS));
         order.setTotalPrice(order.getItems().stream()
                 .map(item -> item.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())))
