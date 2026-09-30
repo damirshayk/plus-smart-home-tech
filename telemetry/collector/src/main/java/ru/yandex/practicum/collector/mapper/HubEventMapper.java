@@ -2,13 +2,9 @@ package ru.yandex.practicum.collector.mapper;
 
 import org.apache.avro.specific.SpecificRecordBase;
 import org.springframework.stereotype.Component;
-import ru.yandex.practicum.collector.model.hub.DeviceAction;
-import ru.yandex.practicum.collector.model.hub.DeviceAddedEvent;
-import ru.yandex.practicum.collector.model.hub.DeviceRemovedEvent;
-import ru.yandex.practicum.collector.model.hub.HubEvent;
-import ru.yandex.practicum.collector.model.hub.ScenarioAddedEvent;
-import ru.yandex.practicum.collector.model.hub.ScenarioCondition;
-import ru.yandex.practicum.collector.model.hub.ScenarioRemovedEvent;
+import ru.yandex.practicum.grpc.telemetry.event.DeviceActionProto;
+import ru.yandex.practicum.grpc.telemetry.event.HubEventProto;
+import ru.yandex.practicum.grpc.telemetry.event.ScenarioConditionProto;
 import ru.yandex.practicum.kafka.telemetry.event.ActionTypeAvro;
 import ru.yandex.practicum.kafka.telemetry.event.ConditionOperationAvro;
 import ru.yandex.practicum.kafka.telemetry.event.ConditionTypeAvro;
@@ -21,74 +17,47 @@ import ru.yandex.practicum.kafka.telemetry.event.ScenarioAddedEventAvro;
 import ru.yandex.practicum.kafka.telemetry.event.ScenarioConditionAvro;
 import ru.yandex.practicum.kafka.telemetry.event.ScenarioRemovedEventAvro;
 
+import java.time.Instant;
+
 @Component
 public class HubEventMapper {
 
-    public HubEventAvro toAvro(HubEvent event) {
-        SpecificRecordBase payload = switch (event) {
-            case DeviceAddedEvent data -> new DeviceAddedEventAvro(
-                    data.getId(),
-                    DeviceTypeAvro.valueOf(data.getDeviceType().name())
-            );
-            case DeviceRemovedEvent data -> new DeviceRemovedEventAvro(
-                    data.getId()
-            );
-            case ScenarioAddedEvent data -> new ScenarioAddedEventAvro(
-                    data.getName(),
-                    data.getConditions().stream()
-                            .map(this::toConditionAvro)
-                            .toList(),
-                    data.getActions().stream()
-                            .map(this::toActionAvro)
-                            .toList()
-            );
-            case ScenarioRemovedEvent data -> new ScenarioRemovedEventAvro(
-                    data.getName()
-            );
-            case null -> throw new IllegalArgumentException(
-                    "Событие хаба не должно быть null"
-            );
-            default -> throw new IllegalArgumentException(
-                    "Неизвестный класс события хаба: "
-                            + event.getClass().getSimpleName()
-            );
-        };
-
-        return new HubEventAvro(
-                event.getHubId(),
-                event.getTimestamp(),
-                payload
-        );
-    }
-
-    private ScenarioConditionAvro toConditionAvro(
-            ScenarioCondition condition) {
-
-        Integer originalValue = condition.getValue();
-        Object avroValue = originalValue;
-
-        if (originalValue != null) {
-            avroValue = switch (condition.getType()) {
-                case MOTION, SWITCH -> originalValue != 0;
-                default -> originalValue;
-            };
+    public HubEventAvro toAvro(HubEventProto event) {
+        if (event == null) {
+            throw new IllegalArgumentException("Событие хаба не должно быть null");
         }
 
-        return new ScenarioConditionAvro(
-                condition.getSensorId(),
-                ConditionTypeAvro.valueOf(condition.getType().name()),
-                ConditionOperationAvro.valueOf(
-                        condition.getOperation().name()
-                ),
-                avroValue
-        );
+        if (!event.hasTimestamp()) {
+            throw new IllegalArgumentException("Время события хаба должно быть указано");
+        }
+
+        SpecificRecordBase payload = switch (event.getPayloadCase()) {
+            case DEVICE_ADDED ->
+                    new DeviceAddedEventAvro(event.getDeviceAdded().getId(), DeviceTypeAvro.valueOf(event.getDeviceAdded().getType().name()));
+            case DEVICE_REMOVED -> new DeviceRemovedEventAvro(event.getDeviceRemoved().getId());
+            case SCENARIO_ADDED ->
+                    new ScenarioAddedEventAvro(event.getScenarioAdded().getName(), event.getScenarioAdded().getConditionList().stream().map(this::toConditionAvro).toList(), event.getScenarioAdded().getActionList().stream().map(this::toActionAvro).toList());
+            case SCENARIO_REMOVED -> new ScenarioRemovedEventAvro(event.getScenarioRemoved().getName());
+            case PAYLOAD_NOT_SET -> throw new IllegalArgumentException("Данные события хаба должны быть указаны");
+        };
+
+        Instant timestamp = Instant.ofEpochSecond(event.getTimestamp().getSeconds(), event.getTimestamp().getNanos());
+
+        return new HubEventAvro(event.getHubId(), timestamp, payload);
     }
 
-    private DeviceActionAvro toActionAvro(DeviceAction action) {
-        return new DeviceActionAvro(
-                action.getSensorId(),
-                ActionTypeAvro.valueOf(action.getType().name()),
-                action.getValue()
-        );
+    private ScenarioConditionAvro toConditionAvro(ScenarioConditionProto condition) {
+
+        Object value = switch (condition.getValueCase()) {
+            case BOOL_VALUE -> condition.getBoolValue();
+            case INT_VALUE -> condition.getIntValue();
+            case VALUE_NOT_SET -> null;
+        };
+
+        return new ScenarioConditionAvro(condition.getSensorId(), ConditionTypeAvro.valueOf(condition.getType().name()), ConditionOperationAvro.valueOf(condition.getOperation().name()), value);
+    }
+
+    private DeviceActionAvro toActionAvro(DeviceActionProto action) {
+        return new DeviceActionAvro(action.getSensorId(), ActionTypeAvro.valueOf(action.getType().name()), action.hasValue() ? action.getValue() : null);
     }
 }

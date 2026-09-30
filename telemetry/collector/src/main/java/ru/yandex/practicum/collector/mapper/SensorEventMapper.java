@@ -2,12 +2,7 @@ package ru.yandex.practicum.collector.mapper;
 
 import org.apache.avro.specific.SpecificRecordBase;
 import org.springframework.stereotype.Component;
-import ru.yandex.practicum.collector.model.sensor.ClimateSensorEvent;
-import ru.yandex.practicum.collector.model.sensor.LightSensorEvent;
-import ru.yandex.practicum.collector.model.sensor.MotionSensorEvent;
-import ru.yandex.practicum.collector.model.sensor.SensorEvent;
-import ru.yandex.practicum.collector.model.sensor.SwitchSensorEvent;
-import ru.yandex.practicum.collector.model.sensor.TemperatureSensorEvent;
+import ru.yandex.practicum.grpc.telemetry.event.SensorEventProto;
 import ru.yandex.practicum.kafka.telemetry.event.ClimateSensorAvro;
 import ru.yandex.practicum.kafka.telemetry.event.LightSensorAvro;
 import ru.yandex.practicum.kafka.telemetry.event.MotionSensorAvro;
@@ -15,45 +10,60 @@ import ru.yandex.practicum.kafka.telemetry.event.SensorEventAvro;
 import ru.yandex.practicum.kafka.telemetry.event.SwitchSensorAvro;
 import ru.yandex.practicum.kafka.telemetry.event.TemperatureSensorAvro;
 
+import java.time.Instant;
+
 @Component
 public class SensorEventMapper {
 
-    public SensorEventAvro toAvro(SensorEvent event) {
-        SpecificRecordBase payload = switch (event) {
-            case ClimateSensorEvent data -> new ClimateSensorAvro(
-                    data.getTemperatureC(),
-                    data.getHumidity(),
-                    data.getCo2Level()
-            );
-            case LightSensorEvent data -> new LightSensorAvro(
-                    data.getLinkQuality(),
-                    data.getLuminosity()
-            );
-            case MotionSensorEvent data -> new MotionSensorAvro(
-                    data.getLinkQuality(),
-                    data.getMotion(),
-                    data.getVoltage()
-            );
-            case SwitchSensorEvent data -> new SwitchSensorAvro(
-                    data.getState()
-            );
-            case TemperatureSensorEvent data -> new TemperatureSensorAvro(
-                    data.getTemperatureC(),
-                    data.getTemperatureF()
-            );
-            case null -> throw new IllegalArgumentException(
+    public SensorEventAvro toAvro(SensorEventProto event) {
+        if (event == null) {
+            throw new IllegalArgumentException(
                     "Событие датчика не должно быть null"
             );
-            default -> throw new IllegalArgumentException(
-                    "Неизвестный класс события датчика: "
-                            + event.getClass().getSimpleName()
+        }
+
+        if (!event.hasTimestamp()) {
+            throw new IllegalArgumentException(
+                    "Время события датчика должно быть указано"
+            );
+        }
+
+        SpecificRecordBase payload = switch (event.getPayloadCase()) {
+            case MOTION_SENSOR -> new MotionSensorAvro(
+                    event.getMotionSensor().getLinkQuality(),
+                    event.getMotionSensor().getMotion(),
+                    event.getMotionSensor().getVoltage()
+            );
+            case TEMPERATURE_SENSOR -> new TemperatureSensorAvro(
+                    event.getTemperatureSensor().getTemperatureC(),
+                    event.getTemperatureSensor().getTemperatureF()
+            );
+            case LIGHT_SENSOR -> new LightSensorAvro(
+                    event.getLightSensor().getLinkQuality(),
+                    event.getLightSensor().getLuminosity()
+            );
+            case CLIMATE_SENSOR -> new ClimateSensorAvro(
+                    event.getClimateSensor().getTemperatureC(),
+                    event.getClimateSensor().getHumidity(),
+                    event.getClimateSensor().getCo2Level()
+            );
+            case SWITCH_SENSOR -> new SwitchSensorAvro(
+                    event.getSwitchSensor().getState()
+            );
+            case PAYLOAD_NOT_SET -> throw new IllegalArgumentException(
+                    "Данные датчика должны быть указаны"
             );
         };
+
+        Instant timestamp = Instant.ofEpochSecond(
+                event.getTimestamp().getSeconds(),
+                event.getTimestamp().getNanos()
+        );
 
         return new SensorEventAvro(
                 event.getId(),
                 event.getHubId(),
-                event.getTimestamp(),
+                timestamp,
                 payload
         );
     }

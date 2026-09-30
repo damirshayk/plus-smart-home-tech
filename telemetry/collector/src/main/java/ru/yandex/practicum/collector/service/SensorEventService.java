@@ -4,7 +4,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import ru.yandex.practicum.collector.kafka.KafkaEventSender;
 import ru.yandex.practicum.collector.mapper.SensorEventMapper;
-import ru.yandex.practicum.collector.model.sensor.SensorEvent;
+import ru.yandex.practicum.grpc.telemetry.event.SensorEventProto;
 import ru.yandex.practicum.kafka.telemetry.event.SensorEventAvro;
 
 import java.util.concurrent.CompletableFuture;
@@ -26,14 +26,16 @@ public class SensorEventService {
         this.sensorsTopic = sensorsTopic;
     }
 
-    public CompletableFuture<Void> collect(SensorEvent event) {
-        SensorEventAvro avroEvent = mapper.toAvro(event);
+    public CompletableFuture<Void> collect(SensorEventProto event) {
+        return send(mapper.toAvro(event));
+    }
 
+    private CompletableFuture<Void> send(SensorEventAvro event) {
         return sender.send(
                 sensorsTopic,
-                avroEvent.getHubId(),
-                avroEvent.getTimestamp().toEpochMilli(),
-                avroEvent
+                event.getHubId(),
+                event.getTimestamp().toEpochMilli(),
+                event
         );
     }
 }
