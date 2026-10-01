@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: api-gateway
+  config:
+    import: file:../config-repo/infra/api-gateway.yml
+  cloud:
+    config:
+      enabled: false
+
+eureka:
+  client:
+    enabled: false
