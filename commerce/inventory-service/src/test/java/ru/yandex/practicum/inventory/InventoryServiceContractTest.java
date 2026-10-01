@@ -178,6 +178,9 @@ class InventoryServiceContractTest {
         mvc.perform(post("/api/inventory/reserve").contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(new ReserveRequest(Long.MAX_VALUE, 1))))
                 .andExpect(status().isNotFound());
+        mvc.perform(post("/api/inventory/release").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new ReserveRequest(Long.MAX_VALUE, 1))))
+                .andExpect(status().isNotFound());
 
         assertThat(inventoryRepository.count()).isZero();
     }
@@ -235,6 +238,50 @@ class InventoryServiceContractTest {
         assertThat(inventory(101L)).isEqualTo(original);
     }
 
+    @ParameterizedTest
+    @CsvSource({"2, 2, 8", "4, 0, 10"})
+    void shouldReleasePartOrAllOfReservationWithoutChangingQuantityOrOtherRecords(
+            int releasedQuantity, int expectedReservedQuantity, int expectedAvailableQuantity) throws Exception {
+        createInventory(101L, 10);
+        InventoryDto untouched = createInventory(102L, 7);
+        reserve(101L, 4);
+
+        mvc.perform(post("/api/inventory/release").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new ReserveRequest(101L, releasedQuantity))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("success").value(true))
+                .andExpect(jsonPath("availableQuantity").value(expectedAvailableQuantity))
+                .andExpect(jsonPath("message").isNotEmpty());
+
+        InventoryDto stored = inventory(101L);
+        assertThat(stored.quantity()).isEqualTo(10);
+        assertThat(stored.reservedQuantity()).isEqualTo(expectedReservedQuantity);
+        assertThat(stored.availableQuantity()).isEqualTo(expectedAvailableQuantity);
+        assertThat(inventory(102L)).isEqualTo(untouched);
+        assertThat(inventoryRepository.count()).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"0, 1", "4, 5", "4, 2147483647"})
+    void shouldRejectReleaseExceedingReservationWithoutChangingStock(int reservedQuantity, int releasedQuantity)
+            throws Exception {
+        createInventory(101L, 10);
+        if (reservedQuantity > 0) {
+            reserve(101L, reservedQuantity);
+        }
+        InventoryDto original = inventory(101L);
+
+        mvc.perform(post("/api/inventory/release").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new ReserveRequest(101L, releasedQuantity))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("status").value(400))
+                .andExpect(jsonPath("message").value(
+                        "Количество для снятия резерва превышает зарезервированное количество товара с id 101"));
+
+        assertThat(inventory(101L)).isEqualTo(original);
+        assertThat(inventoryRepository.count()).isEqualTo(1);
+    }
+
     @Test
     void shouldAcceptZeroStockAndReserveMaximumIntegerWithoutOverflow() throws Exception {
         InventoryDto empty = createInventory(101L, 0);
@@ -271,6 +318,23 @@ class InventoryServiceContractTest {
         InventoryDto original = createInventory(101L, 5);
 
         mvc.perform(post("/api/inventory/reserve").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("status").value(400));
+
+        assertThat(inventory(101L)).isEqualTo(original);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{}", "{\"productId\":101}", "{\"quantity\":1}",
+            "{\"productId\":null,\"quantity\":1}", "{\"productId\":101,\"quantity\":null}",
+            "{\"productId\":101,\"quantity\":0}", "{\"productId\":101,\"quantity\":-1}",
+            "{\"productId\":101,\"quantity\":2147483648}",
+            "{\"productId\":101,\"quantity\":\"ошибка\"}", "{", "null"})
+    void shouldRejectInvalidReleaseWithoutChangingStock(String body) throws Exception {
+        createInventory(101L, 5);
+        reserve(101L, 2);
+        InventoryDto original = inventory(101L);
+
+        mvc.perform(post("/api/inventory/release").contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("status").value(400));
 
         assertThat(inventory(101L)).isEqualTo(original);
@@ -329,6 +393,27 @@ class InventoryServiceContractTest {
         assertThat(stored.getVersion()).isEqualTo(initialVersion + 1);
         assertThat(stored.getReservedQuantity()).isEqualTo(3);
         assertThat(stored.getAvailableQuantity()).isEqualTo(2);
+    }
+
+    @Test
+    void shouldRejectStaleVersionWithoutOverwritingReleasedReservation() throws Exception {
+        createInventory(101L, 10);
+        reserve(101L, 4);
+        Inventory stale = inventoryRepository.findByProductId(101L).orElseThrow();
+        Long initialVersion = stale.getVersion();
+
+        mvc.perform(post("/api/inventory/release").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(new ReserveRequest(101L, 2))))
+                .andExpect(status().isOk());
+        stale.setReservedQuantity(1);
+
+        assertThatThrownBy(() -> inventoryRepository.saveAndFlush(stale))
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
+        Inventory stored = inventoryRepository.findByProductId(101L).orElseThrow();
+        assertThat(stored.getVersion()).isEqualTo(initialVersion + 1);
+        assertThat(stored.getQuantity()).isEqualTo(10);
+        assertThat(stored.getReservedQuantity()).isEqualTo(2);
+        assertThat(stored.getAvailableQuantity()).isEqualTo(8);
     }
 
     @ParameterizedTest

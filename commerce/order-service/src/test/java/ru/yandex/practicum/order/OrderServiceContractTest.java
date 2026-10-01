@@ -2,6 +2,11 @@ package ru.yandex.practicum.order;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import feign.FeignException;
+import feign.Request;
+import feign.RequestInterceptor;
+import feign.RequestTemplate;
+import feign.Response;
 import jakarta.persistence.EntityManagerFactory;
 import org.hibernate.SessionFactory;
 import org.hibernate.stat.Statistics;
@@ -14,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -21,6 +27,12 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import ru.yandex.practicum.order.client.InventoryClient;
+import ru.yandex.practicum.order.client.ProductClient;
+import ru.yandex.practicum.order.client.dto.InventoryRequest;
+import ru.yandex.practicum.order.client.dto.ProductResponse;
+import ru.yandex.practicum.order.client.dto.ReserveResponse;
 import ru.yandex.practicum.order.dto.CreateOrderRequest;
 import ru.yandex.practicum.order.dto.OrderDto;
 import ru.yandex.practicum.order.dto.OrderItemDto;
@@ -32,13 +44,20 @@ import ru.yandex.practicum.order.repository.OrderRepository;
 import ru.yandex.practicum.order.service.OrderService;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -54,6 +73,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 })
 @AutoConfigureMockMvc
 @SpyBean(OrderMapper.class)
+@MockBean({ProductClient.class, InventoryClient.class})
 class OrderServiceContractTest {
 
     private final MockMvc mvc;
@@ -63,11 +83,15 @@ class OrderServiceContractTest {
     private final OrderMapper orderMapper;
     private final JdbcTemplate jdbc;
     private final Statistics statistics;
+    private final ProductClient productClient;
+    private final InventoryClient inventoryClient;
+    private final RequestInterceptor requestInterceptor;
 
     @Autowired
     OrderServiceContractTest(MockMvc mvc, ObjectMapper json, OrderRepository orderRepository,
                              OrderService orderService, OrderMapper orderMapper, JdbcTemplate jdbc,
-                             EntityManagerFactory entityManagerFactory) {
+                             EntityManagerFactory entityManagerFactory, ProductClient productClient,
+                             InventoryClient inventoryClient, RequestInterceptor requestInterceptor) {
         this.mvc = mvc;
         this.json = json;
         this.orderRepository = orderRepository;
@@ -75,12 +99,162 @@ class OrderServiceContractTest {
         this.orderMapper = orderMapper;
         this.jdbc = jdbc;
         this.statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+        this.productClient = productClient;
+        this.inventoryClient = inventoryClient;
+        this.requestInterceptor = requestInterceptor;
     }
 
     @BeforeEach
     void clearOrders() {
         orderRepository.deleteAllInBatch();
         statistics.clear();
+        when(productClient.findById(anyLong())).thenAnswer(invocation -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            return new ProductResponse(invocation.getArgument(0), "Товар из каталога", BigDecimal.ONE, true);
+        });
+        when(inventoryClient.reserve(any())).thenAnswer(invocation -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            return new ReserveResponse(true, 0, "Резерв создан");
+        });
+        when(inventoryClient.release(any())).thenAnswer(invocation -> {
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            return new ReserveResponse(true, 1, "Резерв снят");
+        });
+    }
+
+    @Test
+    void shouldCreateConfirmedOrderUsingOnlyProductIdAndQuantity() throws Exception {
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON).content("""
+                {"customerName":"Покупатель","customerEmail":"buyer@example.com",
+                 "items":[{"productId":1,"quantity":2}]}
+                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("status").value("CONFIRMED"))
+                .andExpect(jsonPath("items[0].productName").value("Товар из каталога"))
+                .andExpect(jsonPath("totalPrice").value(2));
+    }
+
+    @Test
+    void shouldIgnoreClientProductNameAndPrice() throws Exception {
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON).content("""
+                {"customerName":"Покупатель","customerEmail":"buyer@example.com",
+                 "items":[{"productId":1,"quantity":2,"productName":"Подменённое название","price":0.01}]}
+                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("items[0].productName").value("Товар из каталога"))
+                .andExpect(jsonPath("items[0].price").value(1))
+                .andExpect(jsonPath("totalPrice").value(2));
+    }
+
+    @Test
+    void shouldRejectQuantityOverflowBeforeCallingOtherServices() throws Exception {
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON).content("""
+                {"customerName":"Покупатель","customerEmail":"buyer@example.com",
+                 "items":[{"productId":1,"quantity":2147483647},{"productId":1,"quantity":1}]}
+                """))
+                .andExpect(status().isUnprocessableEntity());
+        verifyNoInteractions(productClient, inventoryClient);
+        assertThat(orderRepository.count()).isZero();
+    }
+
+    @Test
+    void shouldRejectInactiveProductWithoutCreatingReservations() throws Exception {
+        when(productClient.findById(1L)).thenReturn(new ProductResponse(1L, "Лампа", BigDecimal.ONE, false));
+
+        postSingleItem().andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("message").value("Товар с id 1 снят с продажи"));
+
+        verifyNoInteractions(inventoryClient);
+        assertThat(orderRepository.count()).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {404, 500, 503})
+    void shouldTranslateCatalogErrorsWithoutExposingRemoteDetails(int remoteStatus) throws Exception {
+        when(productClient.findById(1L)).thenThrow(remoteFailure(remoteStatus));
+
+        MvcResult result = postSingleItem().andExpect(status().isUnprocessableEntity()).andReturn();
+
+        assertThat(result.getResponse().getContentAsString()).doesNotContain("internal-sensitive-detail");
+        verifyNoInteractions(inventoryClient);
+        assertThat(orderRepository.count()).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {404, 409, 500, 503})
+    void shouldTranslateReservationErrorsWithoutSavingOrder(int remoteStatus) throws Exception {
+        when(inventoryClient.reserve(any())).thenThrow(remoteFailure(remoteStatus));
+
+        postSingleItem().andExpect(status().isUnprocessableEntity());
+
+        assertThat(orderRepository.count()).isZero();
+        verify(inventoryClient, times(0)).release(any());
+    }
+
+    @Test
+    void shouldRejectIncompleteCatalogResponseWithoutCreatingReservation() throws Exception {
+        when(productClient.findById(1L)).thenReturn(new ProductResponse(2L, null, null, null));
+
+        postSingleItem().andExpect(status().isUnprocessableEntity());
+
+        verifyNoInteractions(inventoryClient);
+        assertThat(orderRepository.count()).isZero();
+    }
+
+    @Test
+    void shouldRejectUnconfirmedReservation() throws Exception {
+        when(inventoryClient.reserve(any())).thenReturn(new ReserveResponse(false, 0, "internal-sensitive-detail"));
+
+        MvcResult result = postSingleItem().andExpect(status().isUnprocessableEntity()).andReturn();
+
+        assertThat(result.getResponse().getContentAsString()).doesNotContain("internal-sensitive-detail");
+        assertThat(orderRepository.count()).isZero();
+        verify(inventoryClient, times(0)).release(any());
+    }
+
+    @Test
+    void shouldReleaseOnlySuccessfulReservationsWhenNextReservationFails() throws Exception {
+        when(inventoryClient.reserve(new InventoryRequest(2L, 1))).thenThrow(remoteFailure(409));
+        CreateOrderRequest request = new CreateOrderRequest("Покупатель", "buyer@example.com", List.of(
+                new OrderItemRequest(1L, 2), new OrderItemRequest(2L, 1)));
+
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(request)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("message").value("Склад отклонил резерв товара с id 2: "
+                        + "недостаточный остаток или конфликт одновременных изменений"));
+
+        verify(inventoryClient).release(new InventoryRequest(1L, 2));
+        verify(inventoryClient, times(0)).release(new InventoryRequest(2L, 1));
+        assertThat(orderRepository.count()).isZero();
+    }
+
+    @Test
+    void shouldContinueCompensationAndKeepOriginalErrorWhenReleaseFails() throws Exception {
+        when(inventoryClient.reserve(new InventoryRequest(3L, 1))).thenThrow(remoteFailure(409));
+        when(inventoryClient.release(new InventoryRequest(1L, 1))).thenThrow(remoteFailure(503));
+        CreateOrderRequest request = new CreateOrderRequest("Покупатель", "buyer@example.com", List.of(
+                new OrderItemRequest(1L, 1), new OrderItemRequest(2L, 1), new OrderItemRequest(3L, 1)));
+
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(request)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("message").value("Склад отклонил резерв товара с id 3: "
+                        + "недостаточный остаток или конфликт одновременных изменений"));
+
+        verify(inventoryClient).release(new InventoryRequest(1L, 1));
+        verify(inventoryClient).release(new InventoryRequest(2L, 1));
+        verify(inventoryClient, times(0)).release(new InventoryRequest(3L, 1));
+        assertThat(orderRepository.count()).isZero();
+    }
+
+    @Test
+    void shouldSendSourceServiceHeader() {
+        RequestTemplate template = new RequestTemplate();
+
+        requestInterceptor.apply(template);
+
+        assertThat(template.headers()).containsEntry("X-Source-Service", List.of("order-service"));
     }
 
     @Test
@@ -110,11 +284,12 @@ class OrderServiceContractTest {
     void shouldStoreDuplicateProductSnapshotsAndExactDecimalsWithoutOverflow() throws Exception {
         String longName = "Название ".repeat(100);
         BigDecimal price = new BigDecimal("12345678901234567890.123456789");
+        when(productClient.findById(Long.MAX_VALUE)).thenReturn(
+                new ProductResponse(Long.MAX_VALUE, longName, price, true));
         CreateOrderRequest request = new CreateOrderRequest(longName, "buyer@example.com", List.of(
-                new OrderItemRequest(Long.MAX_VALUE, longName, Integer.MAX_VALUE, price),
-                item(Long.MAX_VALUE, "Другой снимок того же товара", 3, "0.0123456789")));
-        BigDecimal total = price.multiply(BigDecimal.valueOf(Integer.MAX_VALUE))
-                .add(new BigDecimal("0.0370370367"));
+                new OrderItemRequest(Long.MAX_VALUE, Integer.MAX_VALUE - 3),
+                new OrderItemRequest(Long.MAX_VALUE, 3)));
+        BigDecimal total = price.multiply(BigDecimal.valueOf(Integer.MAX_VALUE));
 
         OrderDto created = create(request);
         OrderDto stored = byId(created.id());
@@ -123,7 +298,7 @@ class OrderServiceContractTest {
         assertThat(stored.totalPrice()).isEqualByComparingTo(total);
         assertThat(stored.customerName()).isEqualTo(longName);
         assertThat(stored.customerEmail()).isEqualTo(request.customerEmail());
-        assertThat(stored.status()).isEqualTo("CREATED");
+        assertThat(stored.status()).isEqualTo("CONFIRMED");
         assertThat(stored.statusDetails()).isNull();
         assertThat(stored.createdAt()).isNotNull().isEqualTo(created.createdAt());
         assertThat(stored.items()).extracting(OrderItemDto::id).doesNotContainNull().isSorted();
@@ -131,8 +306,10 @@ class OrderServiceContractTest {
                 .containsExactly(Long.MAX_VALUE, Long.MAX_VALUE);
         assertThat(stored.items().get(0).productName()).isEqualTo(longName);
         assertThat(stored.items().get(0).price()).isEqualByComparingTo(price);
-        assertThat(stored.items().get(0).quantity()).isEqualTo(Integer.MAX_VALUE);
-        assertThat(stored.items().get(1).price()).isEqualByComparingTo("0.0123456789");
+        assertThat(stored.items().get(0).quantity()).isEqualTo(Integer.MAX_VALUE - 3);
+        assertThat(stored.items().get(1).price()).isEqualByComparingTo(price);
+        verify(productClient, times(1)).findById(Long.MAX_VALUE);
+        verify(inventoryClient, times(1)).reserve(new InventoryRequest(Long.MAX_VALUE, Integer.MAX_VALUE));
     }
 
     @Test
@@ -140,10 +317,10 @@ class OrderServiceContractTest {
         OrderDto created = create("buyer@example.com", List.of(item(1L, "Лампа", 1, "1")));
 
         assertThat(jdbc.queryForObject("SELECT status FROM orders WHERE id = ?", String.class, created.id()))
-                .isEqualTo("CREATED");
+                .isEqualTo("CONFIRMED");
         OrderStatus storedStatus = orderRepository.findById(created.id()).orElseThrow().getStatus();
-        assertThat(storedStatus).isEqualTo(OrderStatus.CREATED);
-        assertThat(byId(created.id()).status()).isEqualTo("CREATED");
+        assertThat(storedStatus).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(byId(created.id()).status()).isEqualTo("CONFIRMED");
     }
 
     @Test
@@ -171,13 +348,10 @@ class OrderServiceContractTest {
     @ParameterizedTest
     @ValueSource(strings = {"null", "[]", "[null]", "[{}]",
             "[{\"productName\":\"Лампа\",\"quantity\":1,\"price\":1}]",
-            "[{\"productId\":1,\"productName\":\" \",\"quantity\":1,\"price\":1}]",
+            "[{\"productId\":null,\"quantity\":1}]",
             "[{\"productId\":1,\"productName\":\"Лампа\",\"quantity\":0,\"price\":1}]",
             "[{\"productId\":1,\"productName\":\"Лампа\",\"quantity\":-1,\"price\":1}]",
-            "[{\"productId\":1,\"productName\":\"Лампа\",\"quantity\":null,\"price\":1}]",
-            "[{\"productId\":1,\"productName\":\"Лампа\",\"quantity\":1,\"price\":null}]",
-            "[{\"productId\":1,\"productName\":\"Лампа\",\"quantity\":1,\"price\":0}]",
-            "[{\"productId\":1,\"productName\":\"Лампа\",\"quantity\":1,\"price\":0.001}]"})
+            "[{\"productId\":1,\"productName\":\"Лампа\",\"quantity\":null,\"price\":1}]"})
     void shouldRejectInvalidItemsWithoutPersistingOrder(String items) throws Exception {
         String body = """
                 {"customerName":"Покупатель","customerEmail":"buyer@example.com","items":%s}
@@ -227,6 +401,8 @@ class OrderServiceContractTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"{}", "{", "null",
+            "{\"customerName\":\"Покупатель\",\"customerEmail\":\"buyer@example.com\","
+                    + "\"items\":[{\"productId\":1,\"quantity\":2147483648}]}",
             "{\"customerName\":\"Покупатель\",\"customerEmail\":\"buyer@example.com\","
                     + "\"items\":[{\"productId\":\"ошибка\",\"productName\":\"Лампа\",\"quantity\":1,\"price\":1}]}"})
     void shouldRejectInvalidOrderAndMalformedJson(String body) throws Exception {
@@ -299,6 +475,8 @@ class OrderServiceContractTest {
         assertThat(itemCount()).isEqualTo(1);
         assertThat(byId(original.id()).items()).isEqualTo(original.items());
         assertThat(byEmail("other@example.com")).isEmpty();
+        verify(inventoryClient).release(new InventoryRequest(2L, 1));
+        verify(inventoryClient).release(new InventoryRequest(3L, 0));
     }
 
     @Test
@@ -327,6 +505,8 @@ class OrderServiceContractTest {
         assertThat(itemCount()).isEqualTo(1);
         assertThat(byId(original.id())).isEqualTo(original);
         assertThat(byEmail("other@example.com")).isEmpty();
+        verify(inventoryClient).release(new InventoryRequest(2L, 1));
+        verify(inventoryClient).release(new InventoryRequest(3L, 2));
     }
 
     @Test
@@ -342,7 +522,9 @@ class OrderServiceContractTest {
     }
 
     private OrderItemRequest item(long productId, String name, int quantity, String price) {
-        return new OrderItemRequest(productId, name, quantity, new BigDecimal(price));
+        when(productClient.findById(productId)).thenReturn(
+                new ProductResponse(productId, name, new BigDecimal(price), true));
+        return new OrderItemRequest(productId, quantity);
     }
 
     private OrderDto create(String email, List<OrderItemRequest> items) throws Exception {
@@ -379,5 +561,20 @@ class OrderServiceContractTest {
 
     private long itemCount() {
         return jdbc.queryForObject("SELECT COUNT(*) FROM order_items", Long.class);
+    }
+
+    private org.springframework.test.web.servlet.ResultActions postSingleItem() throws Exception {
+        return mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON).content("""
+                {"customerName":"Покупатель","customerEmail":"buyer@example.com",
+                 "items":[{"productId":1,"quantity":1}]}
+                """));
+    }
+
+    private FeignException remoteFailure(int remoteStatus) {
+        Request request = Request.create(Request.HttpMethod.POST, "http://internal-service/api", Map.of(),
+                new byte[0], StandardCharsets.UTF_8, new RequestTemplate());
+        return FeignException.errorStatus("test-call", Response.builder().request(request)
+                .status(remoteStatus).reason("Ошибка сервиса")
+                .body("internal-sensitive-detail", StandardCharsets.UTF_8).build());
     }
 }
