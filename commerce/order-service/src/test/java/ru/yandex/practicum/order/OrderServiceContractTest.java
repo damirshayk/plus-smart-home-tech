@@ -29,7 +29,9 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import ru.yandex.practicum.order.client.InventoryClient;
+import ru.yandex.practicum.order.client.InventoryClientFallbackFactory;
 import ru.yandex.practicum.order.client.ProductClient;
+import ru.yandex.practicum.order.client.ProductClientFallbackFactory;
 import ru.yandex.practicum.order.client.dto.InventoryRequest;
 import ru.yandex.practicum.order.client.dto.ProductResponse;
 import ru.yandex.practicum.order.client.dto.ReserveResponse;
@@ -170,24 +172,47 @@ class OrderServiceContractTest {
 
     @ParameterizedTest
     @ValueSource(ints = {404, 500, 503})
-    void shouldTranslateCatalogErrorsWithoutExposingRemoteDetails(int remoteStatus) throws Exception {
-        when(productClient.findById(1L)).thenThrow(remoteFailure(remoteStatus));
+    void shouldDistinguishCatalogBusinessErrorsFromDegradation(int remoteStatus) throws Exception {
+        when(productClient.findById(1L)).thenAnswer(invocation ->
+                new ProductClientFallbackFactory().create(remoteFailure(remoteStatus)).findById(1L));
 
-        MvcResult result = postSingleItem().andExpect(status().isUnprocessableEntity()).andReturn();
+        MvcResult result;
+        if (remoteStatus == 404) {
+            result = postSingleItem().andExpect(status().isUnprocessableEntity()).andReturn();
+            verifyNoInteractions(inventoryClient);
+            assertThat(orderRepository.count()).isZero();
+        } else {
+            result = postSingleItem().andExpect(status().isCreated())
+                    .andExpect(jsonPath("status").value("PENDING_CONFIRMATION"))
+                    .andExpect(jsonPath("statusDetails").isNotEmpty())
+                    .andExpect(jsonPath("items[0].productId").value(1))
+                    .andExpect(jsonPath("items[0].productName").value("Товар #1 (ожидает проверки)"))
+                    .andExpect(jsonPath("items[0].price").value(0))
+                    .andExpect(jsonPath("totalPrice").value(0)).andReturn();
+            assertThat(orderRepository.count()).isEqualTo(1);
+        }
 
         assertThat(result.getResponse().getContentAsString()).doesNotContain("internal-sensitive-detail");
-        verifyNoInteractions(inventoryClient);
-        assertThat(orderRepository.count()).isZero();
     }
 
     @ParameterizedTest
     @ValueSource(ints = {404, 409, 500, 503})
-    void shouldTranslateReservationErrorsWithoutSavingOrder(int remoteStatus) throws Exception {
-        when(inventoryClient.reserve(any())).thenThrow(remoteFailure(remoteStatus));
+    void shouldDistinguishReservationBusinessErrorsFromDegradation(int remoteStatus) throws Exception {
+        when(inventoryClient.reserve(any())).thenAnswer(invocation ->
+                new InventoryClientFallbackFactory().create(remoteFailure(remoteStatus))
+                        .reserve(invocation.getArgument(0)));
 
-        postSingleItem().andExpect(status().isUnprocessableEntity());
+        if (remoteStatus == 404 || remoteStatus == 409) {
+            postSingleItem().andExpect(status().isUnprocessableEntity());
+            assertThat(orderRepository.count()).isZero();
+        } else {
+            postSingleItem().andExpect(status().isCreated())
+                    .andExpect(jsonPath("status").value("PENDING_CONFIRMATION"))
+                    .andExpect(jsonPath("statusDetails").isNotEmpty())
+                    .andExpect(jsonPath("items[0].price").value(1));
+            assertThat(orderRepository.count()).isEqualTo(1);
+        }
 
-        assertThat(orderRepository.count()).isZero();
         verify(inventoryClient, times(0)).release(any());
     }
 
