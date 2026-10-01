@@ -13,8 +13,10 @@ import ru.yandex.practicum.order.dto.CreateOrderRequest;
 import ru.yandex.practicum.order.dto.OrderDto;
 import ru.yandex.practicum.order.entity.Order;
 import ru.yandex.practicum.order.entity.OrderStatus;
+import ru.yandex.practicum.order.exception.InventoryServiceUnavailableException;
 import ru.yandex.practicum.order.exception.NotFoundException;
 import ru.yandex.practicum.order.exception.OrderProcessingException;
+import ru.yandex.practicum.order.exception.ProductServiceUnavailableException;
 import ru.yandex.practicum.order.mapper.OrderMapper;
 import ru.yandex.practicum.order.repository.OrderRepository;
 
@@ -23,8 +25,10 @@ import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -45,16 +49,32 @@ public class OrderService {
             throw new OrderProcessingException("Суммарное количество одного товара превышает допустимое", e);
         }
         Map<Long, ProductResponse> products = new LinkedHashMap<>();
-        quantities.keySet().forEach(id -> products.put(id, loadProduct(id)));
+        Set<String> degradationReasons = new LinkedHashSet<>();
+        for (Long id : quantities.keySet()) {
+            try {
+                products.put(id, loadProduct(id));
+            } catch (ProductServiceUnavailableException e) {
+                products.put(id, new ProductResponse(id, "Товар #" + id + " (ожидает проверки)",
+                        BigDecimal.ZERO, null));
+                degradationReasons.add("Каталог недоступен для товара #" + id);
+            }
+        }
         List<InventoryRequest> reservations = new ArrayList<>();
         try {
             for (Map.Entry<Long, Integer> entry : quantities.entrySet()) {
                 InventoryRequest reservation = new InventoryRequest(entry.getKey(), entry.getValue());
-                reserve(reservation);
-                reservations.add(reservation);
+                try {
+                    reserve(reservation);
+                    reservations.add(reservation);
+                } catch (InventoryServiceUnavailableException e) {
+                    degradationReasons.add("Резерв товара #" + entry.getKey() + " не подтверждён: склад недоступен");
+                }
             }
             Order order = orderMapper.toEntity(request, products);
-            order.setStatus(OrderStatus.CONFIRMED);
+            order.setStatus(degradationReasons.isEmpty() ? OrderStatus.CONFIRMED : OrderStatus.PENDING_CONFIRMATION);
+            if (!degradationReasons.isEmpty()) {
+                order.setStatusDetails("Требуется ручная проверка заказа. " + String.join("; ", degradationReasons));
+            }
             order.setCreatedAt(LocalDateTime.now().truncatedTo(ChronoUnit.MICROS));
             order.setTotalPrice(order.getItems().stream()
                     .map(item -> item.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())))

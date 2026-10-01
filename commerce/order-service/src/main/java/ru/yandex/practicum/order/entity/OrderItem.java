@@ -20,7 +20,7 @@ import java.math.BigDecimal;
 
 @Entity
 @Table(name = "order_items")
-@Check(constraints = "quantity >= 1 AND price >= 0.01")
+@Check(constraints = "quantity >= 1 AND price >= 0")
 @Getter
 @Setter
 @NoArgsConstructor
