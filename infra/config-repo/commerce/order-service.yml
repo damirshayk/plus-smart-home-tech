@@ -4,3 +4,16 @@ server:
 spring:
   datasource:
     url: jdbc:postgresql://localhost:5432/order_db
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 2000
+            readTimeout: 5000
+          product-service:
+            loggerLevel: BASIC
+
+logging:
+  level:
+    ru.yandex.practicum.order.client.ProductClient: DEBUG
