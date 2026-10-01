@@ -19,7 +19,6 @@ spring:
                 retries: 2
                 statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE,GATEWAY_TIMEOUT
                 series: []
-                exceptions: []
                 methods: GET
                 backoff:
                   firstBackoff: 100ms
@@ -35,7 +34,6 @@ spring:
                 retries: 2
                 statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE,GATEWAY_TIMEOUT
                 series: []
-                exceptions: []
                 methods: GET
                 backoff:
                   firstBackoff: 100ms
@@ -51,7 +49,6 @@ spring:
                 retries: 2
                 statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE,GATEWAY_TIMEOUT
                 series: []
-                exceptions: []
                 methods: GET
                 backoff:
                   firstBackoff: 100ms
