@@ -133,7 +133,8 @@ public class OrderService {
                 }
             } catch (RuntimeException e) {
                 failure.addSuppressed(e);
-                log.error("Не удалось снять резерв товара с id {}", reservation.productId());
+                log.error("Не удалось снять резерв товара с id {}, количество {}",
+                        reservation.productId(), reservation.quantity());
             }
         }
     }

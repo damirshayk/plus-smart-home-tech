@@ -12,6 +12,7 @@ import org.hibernate.SessionFactory;
 import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -20,6 +21,8 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -255,11 +258,12 @@ class OrderServiceContractTest {
     }
 
     @Test
-    void shouldContinueCompensationAndKeepOriginalErrorWhenReleaseFails() throws Exception {
+    @ExtendWith(OutputCaptureExtension.class)
+    void shouldContinueCompensationAndKeepOriginalErrorWhenReleaseFails(CapturedOutput output) throws Exception {
         when(inventoryClient.reserve(new InventoryRequest(3L, 1))).thenThrow(remoteFailure(409));
-        when(inventoryClient.release(new InventoryRequest(1L, 1))).thenThrow(remoteFailure(503));
+        when(inventoryClient.release(new InventoryRequest(1L, 2))).thenThrow(remoteFailure(503));
         CreateOrderRequest request = new CreateOrderRequest("Покупатель", "buyer@example.com", List.of(
-                new OrderItemRequest(1L, 1), new OrderItemRequest(2L, 1), new OrderItemRequest(3L, 1)));
+                new OrderItemRequest(1L, 2), new OrderItemRequest(2L, 1), new OrderItemRequest(3L, 1)));
 
         mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(request)))
@@ -267,10 +271,12 @@ class OrderServiceContractTest {
                 .andExpect(jsonPath("message").value("Склад отклонил резерв товара с id 3: "
                         + "недостаточный остаток или конфликт одновременных изменений"));
 
-        verify(inventoryClient).release(new InventoryRequest(1L, 1));
+        verify(inventoryClient).release(new InventoryRequest(1L, 2));
         verify(inventoryClient).release(new InventoryRequest(2L, 1));
         verify(inventoryClient, times(0)).release(new InventoryRequest(3L, 1));
         assertThat(orderRepository.count()).isZero();
+        assertThat(output.getAll()).contains("Не удалось снять резерв товара с id 1, количество 2")
+                .doesNotContain("internal-sensitive-detail");
     }
 
     @Test
