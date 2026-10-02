@@ -13,11 +13,15 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.core.userdetails.ReactiveUserDetailsService;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.web.reactive.function.server.RouterFunction;
 import org.springframework.web.reactive.function.server.RouterFunctions;
 import org.springframework.web.reactive.function.server.ServerResponse;
 import ru.yandex.practicum.gateway.ApiGatewayApp;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(classes = ApiGatewayApp.class, webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @AutoConfigureWebTestClient
@@ -25,10 +29,28 @@ import ru.yandex.practicum.gateway.ApiGatewayApp;
 class GatewaySecurityConfigTest {
 
     private final WebTestClient http;
+    private final GatewaySecurityProperties properties;
+    private final ReactiveUserDetailsService users;
 
     @Autowired
-    GatewaySecurityConfigTest(WebTestClient http) {
+    GatewaySecurityConfigTest(WebTestClient http, GatewaySecurityProperties properties,
+                              ReactiveUserDetailsService users) {
         this.http = http;
+        this.properties = properties;
+        this.users = users;
+    }
+
+    @ParameterizedTest
+    @CsvSource({"ivan", "anna"})
+    void shouldUseConfiguredPasswordHashWithoutEncodingAgain(String username) {
+        var password = properties.users().stream()
+                .filter(user -> user.username().equals(username))
+                .map(GatewaySecurityProperties.User::password)
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(password).startsWith("{bcrypt}");
+        assertThat(users.findByUsername(username).map(UserDetails::getPassword).block()).isEqualTo(password);
     }
 
     @ParameterizedTest
@@ -56,6 +78,9 @@ class GatewaySecurityConfigTest {
 
     @ParameterizedTest
     @CsvSource({
+            "HEAD, /api/products",
+            "HEAD, /api/categories",
+            "HEAD, /api/inventory",
             "POST, /api/orders",
             "GET, /api/orders/by-email?email=ivan@example.com",
             "GET, /api/orders/order-1",
@@ -87,6 +112,9 @@ class GatewaySecurityConfigTest {
             "ivan, GET, /api/orders/by-email?email=ivan@example.com, 200",
             "ivan, GET, /api/orders/order-1, 200",
             "ivan, GET, /api/orders, 403",
+            "ivan, HEAD, /api/products, 403",
+            "ivan, HEAD, /api/categories, 403",
+            "ivan, HEAD, /api/inventory, 403",
             "ivan, POST, /api/products, 403",
             "ivan, PUT, /api/products/product-1, 403",
             "ivan, PATCH, /api/products/product-1, 403",
@@ -103,6 +131,9 @@ class GatewaySecurityConfigTest {
             "anna, GET, /api/orders/by-email?email=anna@example.com, 200",
             "anna, GET, /api/orders/order-1, 200",
             "anna, GET, /api/orders, 200",
+            "anna, HEAD, /api/products, 403",
+            "anna, HEAD, /api/categories, 403",
+            "anna, HEAD, /api/inventory, 403",
             "anna, POST, /api/products, 200",
             "anna, PUT, /api/products/product-1, 200",
             "anna, PATCH, /api/products/product-1, 200",

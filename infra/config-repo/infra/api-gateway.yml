@@ -95,8 +95,8 @@ gateway:
   security:
     users:
       - username: ivan
-        password: ivan
+        password: '{bcrypt}$2a$10$X8OoxvyDFb9Zw77JzTfFwO4caUrgMwHZH9MG8osSTCIzThkpvvrNi'
         roles: [USER]
       - username: anna
-        password: anna
+        password: '{bcrypt}$2a$10$5TtRMK/x0wNRTKg8gLSl3eV4F0pvHCPJ4ddKaB3ZtTvr6bg8nYF5q'
         roles: [USER, ADMIN]

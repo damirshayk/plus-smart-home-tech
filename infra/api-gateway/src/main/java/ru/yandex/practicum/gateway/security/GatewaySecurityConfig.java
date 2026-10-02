@@ -10,7 +10,7 @@ import org.springframework.security.config.annotation.web.reactive.EnableWebFlux
 import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.core.userdetails.MapReactiveUserDetailsService;
 import org.springframework.security.core.userdetails.User;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.factory.PasswordEncoderFactories;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.server.SecurityWebFilterChain;
 import org.springframework.security.web.server.context.NoOpServerSecurityContextRepository;
@@ -25,15 +25,14 @@ public class GatewaySecurityConfig {
 
     @Bean
     PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
+        return PasswordEncoderFactories.createDelegatingPasswordEncoder();
     }
 
     @Bean
-    MapReactiveUserDetailsService userDetailsService(GatewaySecurityProperties properties,
-                                                    PasswordEncoder passwordEncoder) {
+    MapReactiveUserDetailsService userDetailsService(GatewaySecurityProperties properties) {
         var users = properties.users().stream()
                 .map(user -> User.withUsername(user.username())
-                        .password(passwordEncoder.encode(user.password()))
+                        .password(user.password())
                         .roles(user.roles().toArray(String[]::new))
                         .build())
                 .toList();
@@ -50,6 +49,7 @@ public class GatewaySecurityConfig {
     @Bean
     SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http,
                                                  CorsConfigurationSource corsConfigurationSource) {
+        // Basic Auth и stateless требуются заданием: BCrypt проверяется на каждом запросе.
         return http
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource))
@@ -60,11 +60,14 @@ public class GatewaySecurityConfig {
                 .httpBasic(Customizer.withDefaults())
                 .authorizeExchange(exchanges -> exchanges
                         .pathMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                        // Эти правила открывают доступ, но не создают маршруты документации.
                         .pathMatchers(HttpMethod.GET, "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**")
                         .permitAll()
+                        // Матрица ТЗ разрешает только GET; HEAD остаётся под denyAll().
                         .pathMatchers(HttpMethod.GET, "/api/products/**", "/api/categories/**", "/api/inventory/**")
                         .permitAll()
                         .pathMatchers(HttpMethod.GET, "/api/orders").hasRole("ADMIN")
+                        // Именованный путь оставлен явно для читаемости, хотя его покрывает /{id}.
                         .pathMatchers(HttpMethod.GET, "/api/orders/by-email", "/api/orders/{id}").hasRole("USER")
                         .pathMatchers(HttpMethod.POST, "/api/orders/**").hasRole("USER")
                         .pathMatchers(HttpMethod.POST, "/api/products/**", "/api/categories/**", "/api/inventory/**")

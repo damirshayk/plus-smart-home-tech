@@ -2,6 +2,8 @@ spring:
   application:
     name: api-gateway
   config:
+    # Используем конфиг Gateway без дублирования настроек.
+    # Путь рассчитан на рабочую папку infra/api-gateway, как при запуске тестов Maven.
     import: file:../config-repo/infra/api-gateway.yml
   cloud:
     config:
