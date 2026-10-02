@@ -14,8 +14,11 @@ CREATE TABLE IF NOT EXISTS order_items (
     product_id BIGINT NOT NULL,
     product_name TEXT NOT NULL,
     quantity INTEGER NOT NULL CHECK (quantity >= 1),
-    price NUMERIC NOT NULL CHECK (price >= 0.01)
+    price NUMERIC NOT NULL
 );
+
+ALTER TABLE order_items DROP CONSTRAINT IF EXISTS order_items_price_check;
+ALTER TABLE order_items ADD CONSTRAINT order_items_price_check CHECK (price >= 0);
 
 CREATE INDEX IF NOT EXISTS idx_orders_customer_email ON orders(customer_email);
 CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);

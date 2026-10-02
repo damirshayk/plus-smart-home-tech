@@ -1,6 +1,7 @@
 package ru.yandex.practicum.order.mapper;
 
 import org.springframework.stereotype.Component;
+import ru.yandex.practicum.order.client.dto.ProductResponse;
 import ru.yandex.practicum.order.dto.CreateOrderRequest;
 import ru.yandex.practicum.order.dto.OrderDto;
 import ru.yandex.practicum.order.dto.OrderItemDto;
@@ -8,20 +9,23 @@ import ru.yandex.practicum.order.dto.OrderItemRequest;
 import ru.yandex.practicum.order.entity.Order;
 import ru.yandex.practicum.order.entity.OrderItem;
 
+import java.util.Map;
+
 @Component
 public class OrderMapper {
 
-    public Order toEntity(CreateOrderRequest request) {
+    public Order toEntity(CreateOrderRequest request, Map<Long, ProductResponse> products) {
         Order order = new Order();
         order.setCustomerName(request.customerName());
         order.setCustomerEmail(request.customerEmail());
         for (OrderItemRequest itemRequest : request.items()) {
+            ProductResponse product = products.get(itemRequest.productId());
             OrderItem item = new OrderItem();
             item.setOrder(order);
             item.setProductId(itemRequest.productId());
-            item.setProductName(itemRequest.productName());
+            item.setProductName(product.name());
             item.setQuantity(itemRequest.quantity());
-            item.setPrice(itemRequest.price());
+            item.setPrice(product.price());
             order.getItems().add(item);
         }
         return order;
